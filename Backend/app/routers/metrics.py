@@ -1,10 +1,10 @@
-import json
 from pathlib import Path
 from fastapi import APIRouter
+import json
 
 router = APIRouter()
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 METRICS_PATH = BASE_DIR / "models" / "metadata" / "metrics.json"
 
 @router.get("/metrics")
