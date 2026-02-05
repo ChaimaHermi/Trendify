@@ -1,276 +1,349 @@
-import { useState } from 'react';
-import { Send, Hash, Globe, Type, Sparkles, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-
-interface PredictionResult {
-  predicted_class: string;
-  virality_score: number;
-  model_used: string;
-  features: Record<string, number>;
-}
+import { useState } from "react";
+import { Upload, FileSpreadsheet, Sparkles, TrendingUp, Eye, BarChart3, PieChart } from "lucide-react";
+import { predictFromCsv, type CsvPredictionResponse } from "../lib/api";
 
 export default function PredictView() {
-  const [contentText, setContentText] = useState('');
-  const [hashtags, setHashtags] = useState('');
-  const [platform, setPlatform] = useState('instagram');
-  const [contentType, setContentType] = useState('text');
-  const [selectedModel, setSelectedModel] = useState('Neural Network');
+  const [file, setFile] = useState<File | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [prediction, setPrediction] = useState<PredictionResult | null>(null);
+  const [result, setResult] = useState<CsvPredictionResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [csvPreview, setCsvPreview] = useState<any[]>([]);
 
-  const models = ['Logistic Regression', 'Random Forest', 'XGBoost', 'Neural Network'];
-  const platforms = ['instagram', 'twitter', 'facebook', 'linkedin', 'tiktok'];
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0] ?? null;
+    setFile(selected);
+    setError(null);
+    setResult(null);
 
-  const simulatePrediction = (text: string, model: string): PredictionResult => {
-    const textLength = text.length;
-    const hashtagCount = hashtags.split('#').filter(h => h.trim()).length;
-    const hasEmoji = /[\u{1F600}-\u{1F64F}]/u.test(text);
+    // Parse CSV for preview
+    if (selected) {
+      try {
+        const text = await selected.text();
+        const rows = text.split('\n').filter(row => row.trim());
+        const headers = rows[0].split(',');
+        const data = rows.slice(1, 6).map(row => {
+          const values = row.split(',');
+          const obj: any = {};
+          headers.forEach((header, i) => {
+            obj[header.trim()] = values[i]?.trim() || '-';
+          });
+          return obj;
+        });
+        setCsvPreview(data);
+      } catch (err) {
+        console.error('Preview error:', err);
+      }
+    } else {
+      setCsvPreview([]);
+    }
+  };
 
-    let baseScore = 50;
-    if (textLength > 100 && textLength < 280) baseScore += 15;
-    if (hashtagCount >= 3 && hashtagCount <= 5) baseScore += 10;
-    if (hasEmoji) baseScore += 5;
-    if (text.includes('?') || text.includes('!')) baseScore += 5;
+  const handleUpload = async () => {
+    if (!file) {
+      setError("Veuillez sélectionner un fichier CSV.");
+      return;
+    }
 
-    const modelBonus = {
-      'Logistic Regression': 0,
-      'Random Forest': 5,
-      'XGBoost': 8,
-      'Neural Network': 12,
-    }[model] || 0;
+    setIsAnalyzing(true);
+    setError(null);
 
-    const finalScore = Math.min(95, Math.max(10, baseScore + modelBonus + Math.random() * 10 - 5));
+    try {
+      const response = await predictFromCsv("mlp", file);
+      setResult(response);
+    } catch (err) {
+      console.error(err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Une erreur s'est produite lors de l'analyse.",
+      );
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
-    let predictedClass = 'Low';
-    if (finalScore >= 70) predictedClass = 'High';
-    else if (finalScore >= 40) predictedClass = 'Medium';
+  // Calculate statistics from results
+  const getStatistics = () => {
+    if (!result) return null;
+
+    const viralCount = result.results.filter(r => r.prediction === "Viral").length;
+    const totalCount = result.results.length;
+    const viralPercentage = (viralCount / totalCount) * 100;
+
+    const avgConfidence = result.results.reduce((acc, r) => acc + r.confidence, 0) / totalCount;
+
+    const platformCounts: Record<string, { viral: number; total: number }> = {};
+    result.results.forEach(row => {
+      const platform = (row.data as any).platform || 'unknown';
+      if (!platformCounts[platform]) {
+        platformCounts[platform] = { viral: 0, total: 0 };
+      }
+      platformCounts[platform].total++;
+      if (row.prediction === "Viral") {
+        platformCounts[platform].viral++;
+      }
+    });
 
     return {
-      predicted_class: predictedClass,
-      virality_score: Math.round(finalScore),
-      model_used: model,
-      features: {
-        'Text Length': textLength,
-        'Hashtag Count': hashtagCount,
-        'Emoji Presence': hasEmoji ? 1 : 0,
-        'Call to Action': (text.includes('?') || text.includes('!')) ? 1 : 0,
-        'Platform Score': Math.random() * 0.3 + 0.5,
-      },
+      viralCount,
+      totalCount,
+      viralPercentage,
+      avgConfidence,
+      platformCounts,
     };
   };
 
-  const handleAnalyze = async () => {
-    if (!contentText.trim()) return;
-
-    setIsAnalyzing(true);
-    await new Promise(resolve => setTimeout(resolve, 1500));
-
-    const result = simulatePrediction(contentText, selectedModel);
-    setPrediction(result);
-
-    await supabase.from('predictions').insert({
-      content_text: contentText,
-      content_type: contentType,
-      hashtags: hashtags.split('#').filter(h => h.trim()),
-      platform,
-      predicted_class: result.predicted_class,
-      virality_score: result.virality_score,
-      model_used: result.model_used,
-      features: result.features,
-    });
-
-    setIsAnalyzing(false);
-  };
-
-  const getScoreColor = (score: number) => {
-    if (score >= 70) return 'text-green-600';
-    if (score >= 40) return 'text-orange-500';
-    return 'text-red-500';
-  };
-
-  const getScoreBg = (score: number) => {
-    if (score >= 70) return 'bg-green-50 border-green-200';
-    if (score >= 40) return 'bg-orange-50 border-orange-200';
-    return 'bg-red-50 border-red-200';
-  };
-
-  const getClassIcon = (className: string) => {
-    if (className === 'High') return <TrendingUp className="w-6 h-6" />;
-    if (className === 'Medium') return <Minus className="w-6 h-6" />;
-    return <TrendingDown className="w-6 h-6" />;
-  };
+  const stats = getStatistics();
 
   return (
-    <div className="grid lg:grid-cols-2 gap-8">
-      <div className="space-y-6">
-        <div className="bg-white rounded-xl shadow-md p-6 border border-slate-200">
-          <h2 className="text-2xl font-bold text-slate-900 mb-6 flex items-center gap-2">
-            <Sparkles className="w-6 h-6 text-blue-600" />
-            Content Analysis
-          </h2>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20 py-8">
+      <div className="max-w-7xl mx-auto px-4">
+        {/* Header */}
+        <div className="mb-8 text-center">
+          <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-transparent mb-2">
+            Analyse Virale avec MLP
+          </h1>
+          <p className="text-slate-600">
+            Multi-layer Perceptron pour prédire le potentiel viral de vos posts
+          </p>
+        </div>
+
+        {/* Upload Section */}
+        <div className="bg-white rounded-2xl shadow-xl p-8 mb-8 border border-slate-200">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center">
+              <FileSpreadsheet className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-slate-900">Importer vos données</h2>
+              <p className="text-sm text-slate-500">Classification avec MLP Neural Network</p>
+            </div>
+          </div>
 
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                <Type className="w-4 h-4 inline mr-1" />
-                Social Media Content
+              <label className="flex-1 group relative block">
+                <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 cursor-pointer transition-all hover:border-blue-500 hover:bg-blue-50/50 group-hover:scale-[1.01]">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center group-hover:bg-blue-200 transition-colors">
+                      <Upload className="w-8 h-8 text-blue-600" />
+                    </div>
+                    <div className="text-center">
+                      <p className="text-lg font-semibold text-slate-700">
+                        {file ? file.name : "Choisissez un fichier CSV"}
+                      </p>
+                      <p className="text-sm text-slate-500 mt-1">
+                        ou glissez-déposez ici
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
               </label>
-              <textarea
-                value={contentText}
-                onChange={(e) => setContentText(e.target.value)}
-                placeholder="Enter your social media post here..."
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-                rows={6}
-              />
-              <p className="text-xs text-slate-500 mt-1">{contentText.length} characters</p>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                <Hash className="w-4 h-4 inline mr-1" />
-                Hashtags
-              </label>
-              <input
-                type="text"
-                value={hashtags}
-                onChange={(e) => setHashtags(e.target.value)}
-                placeholder="#viral #trending #amazing"
-                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  <Globe className="w-4 h-4 inline mr-1" />
-                  Platform
-                </label>
-                <select
-                  value={platform}
-                  onChange={(e) => setPlatform(e.target.value)}
-                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  {platforms.map(p => (
-                    <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
-                  ))}
-                </select>
+            {error && (
+              <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-lg">
+                <p className="text-sm text-red-700 font-medium">{error}</p>
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Content Type</label>
-                <select
-                  value={contentType}
-                  onChange={(e) => setContentType(e.target.value)}
-                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value="text">Text</option>
-                  <option value="image">Image</option>
-                  <option value="video">Video</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">ML Model</label>
-              <select
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                {models.map(m => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            </div>
+            )}
 
             <button
-              onClick={handleAnalyze}
-              disabled={!contentText.trim() || isAnalyzing}
-              className="w-full bg-gradient-to-r from-blue-600 to-cyan-500 text-white py-3 rounded-lg font-semibold hover:from-blue-700 hover:to-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 shadow-lg"
+              onClick={handleUpload}
+              disabled={!file || isAnalyzing}
+              className="w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white py-4 rounded-xl font-semibold hover:shadow-2xl disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-3 text-lg shadow-lg hover:scale-[1.02]"
             >
               {isAnalyzing ? (
-                <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
+                <>
+                  <div className="animate-spin rounded-full h-6 w-6 border-3 border-white border-t-transparent" />
+                  <span>Analyse en cours...</span>
+                </>
               ) : (
                 <>
-                  <Send className="w-5 h-5" />
-                  Analyze Virality
+                  <Sparkles className="w-6 h-6" />
+                  Analyser avec MLP
                 </>
               )}
             </button>
           </div>
         </div>
-      </div>
 
-      <div className="space-y-6">
-        {prediction ? (
-          <>
-            <div className={`rounded-xl shadow-md p-8 border-2 ${getScoreBg(prediction.virality_score)}`}>
-              <div className="text-center">
-                <div className={`inline-flex items-center justify-center gap-2 mb-4 ${getScoreColor(prediction.virality_score)}`}>
-                  {getClassIcon(prediction.predicted_class)}
-                  <h3 className="text-2xl font-bold">{prediction.predicted_class} Virality Potential</h3>
+        {/* CSV Preview */}
+        {csvPreview.length > 0 && !result && (
+          <div className="bg-white rounded-2xl shadow-xl p-8 mb-8 border border-slate-200">
+            <div className="flex items-center gap-3 mb-6">
+              <Eye className="w-6 h-6 text-indigo-600" />
+              <h3 className="text-xl font-bold text-slate-900">
+                Aperçu des données ({csvPreview.length} premières lignes)
+              </h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="bg-gradient-to-r from-slate-50 to-blue-50 border-b-2 border-blue-200">
+                    {Object.keys(csvPreview[0] || {}).slice(0, 8).map((key) => (
+                      <th key={key} className="px-4 py-3 text-left font-semibold text-slate-700 capitalize">
+                        {key}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {csvPreview.map((row, idx) => (
+                    <tr key={idx} className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors">
+                      {Object.values(row).slice(0, 8).map((val: any, i) => (
+                        <td key={i} className="px-4 py-3 text-slate-600">
+                          {val}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Results Section with Charts */}
+        {result && stats && (
+          <div className="space-y-6">
+            {/* Summary Cards */}
+            <div className="grid md:grid-cols-3 gap-6">
+              <div className="bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-xl p-6 text-white">
+                <div className="flex items-center justify-between mb-2">
+                  <TrendingUp className="w-8 h-8 opacity-80" />
+                  <span className="text-3xl font-bold">{stats.viralCount}</span>
                 </div>
+                <p className="text-green-100 font-medium">Posts Viraux</p>
+                <p className="text-green-50 text-sm mt-1">
+                  {stats.viralPercentage.toFixed(1)}% du total
+                </p>
+              </div>
 
-                <div className="relative w-48 h-48 mx-auto mb-6">
-                  <svg className="transform -rotate-90 w-48 h-48">
+              <div className="bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl shadow-xl p-6 text-white">
+                <div className="flex items-center justify-between mb-2">
+                  <BarChart3 className="w-8 h-8 opacity-80" />
+                  <span className="text-3xl font-bold">{stats.totalCount}</span>
+                </div>
+                <p className="text-blue-100 font-medium">Total Analysés</p>
+                <p className="text-blue-50 text-sm mt-1">
+                  Modèle: MLP Neural Network
+                </p>
+              </div>
+
+              <div className="bg-gradient-to-br from-purple-500 to-pink-600 rounded-2xl shadow-xl p-6 text-white">
+                <div className="flex items-center justify-between mb-2">
+                  <Sparkles className="w-8 h-8 opacity-80" />
+                  <span className="text-3xl font-bold">
+                    {(stats.avgConfidence * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <p className="text-purple-100 font-medium">Confiance Moyenne</p>
+                <p className="text-purple-50 text-sm mt-1">
+                  Précision du modèle
+                </p>
+              </div>
+            </div>
+
+            {/* Viral Distribution Chart */}
+            <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
+              <div className="flex items-center gap-3 mb-6">
+                <PieChart className="w-6 h-6 text-blue-600" />
+                <h3 className="text-2xl font-bold text-slate-900">
+                  Distribution des Prédictions
+                </h3>
+              </div>
+
+              <div className="flex items-center justify-center gap-8 py-8">
+                {/* Circular Progress */}
+                <div className="relative w-64 h-64">
+                  <svg className="transform -rotate-90 w-64 h-64">
                     <circle
-                      cx="96"
-                      cy="96"
-                      r="80"
-                      stroke="#e5e7eb"
-                      strokeWidth="16"
+                      cx="128"
+                      cy="128"
+                      r="100"
+                      stroke="#e2e8f0"
+                      strokeWidth="24"
                       fill="none"
                     />
                     <circle
-                      cx="96"
-                      cy="96"
-                      r="80"
-                      stroke="currentColor"
-                      strokeWidth="16"
+                      cx="128"
+                      cy="128"
+                      r="100"
+                      stroke="url(#gradient)"
+                      strokeWidth="24"
                       fill="none"
-                      strokeDasharray={`${prediction.virality_score * 5.03} 502.65`}
+                      strokeDasharray={`${stats.viralPercentage * 6.28} 628`}
                       strokeLinecap="round"
-                      className={getScoreColor(prediction.virality_score)}
+                      className="transition-all duration-1000"
                     />
+                    <defs>
+                      <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stopColor="#10b981" />
+                        <stop offset="100%" stopColor="#059669" />
+                      </linearGradient>
+                    </defs>
                   </svg>
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="text-center">
-                      <div className={`text-5xl font-bold ${getScoreColor(prediction.virality_score)}`}>
-                        {prediction.virality_score}
-                      </div>
-                      <div className="text-sm text-slate-600">Virality Score</div>
-                    </div>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <span className="text-5xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
+                      {stats.viralPercentage.toFixed(1)}%
+                    </span>
+                    <span className="text-slate-600 font-medium mt-2">Viraux</span>
                   </div>
                 </div>
 
-                <div className="bg-white/50 rounded-lg p-4 inline-block">
-                  <p className="text-sm text-slate-600">Analyzed by</p>
-                  <p className="font-semibold text-slate-900">{prediction.model_used}</p>
+                {/* Legend */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-green-500 to-emerald-600"></div>
+                    <div>
+                      <p className="font-semibold text-slate-900">Viral</p>
+                      <p className="text-sm text-slate-600">{stats.viralCount} posts</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="w-6 h-6 rounded-lg bg-slate-200"></div>
+                    <div>
+                      <p className="font-semibold text-slate-900">Non-Viral</p>
+                      <p className="text-sm text-slate-600">
+                        {stats.totalCount - stats.viralCount} posts
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-md p-6 border border-slate-200">
-              <h3 className="text-lg font-bold text-slate-900 mb-4">Feature Importance</h3>
-              <div className="space-y-3">
-                {Object.entries(prediction.features).map(([feature, value]) => {
-                  const percentage = typeof value === 'number' && value <= 1
-                    ? value * 100
-                    : Math.min(value / Math.max(...Object.values(prediction.features)) * 100, 100);
+            {/* Platform Performance */}
+            <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
+              <div className="flex items-center gap-3 mb-6">
+                <BarChart3 className="w-6 h-6 text-blue-600" />
+                <h3 className="text-2xl font-bold text-slate-900">
+                  Performance par Plateforme
+                </h3>
+              </div>
 
+              <div className="space-y-4">
+                {Object.entries(stats.platformCounts).map(([platform, counts]) => {
+                  const percentage = (counts.viral / counts.total) * 100;
                   return (
-                    <div key={feature}>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span className="text-slate-700">{feature}</span>
-                        <span className="font-medium text-slate-900">
-                          {typeof value === 'number' && value <= 1
-                            ? `${(value * 100).toFixed(0)}%`
-                            : value}
+                    <div key={platform} className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="font-semibold text-slate-900 capitalize">
+                          {platform}
+                        </span>
+                        <span className="text-sm text-slate-600">
+                          {counts.viral}/{counts.total} viraux ({percentage.toFixed(1)}%)
                         </span>
                       </div>
-                      <div className="w-full bg-slate-200 rounded-full h-2">
+                      <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
                         <div
-                          className="bg-gradient-to-r from-blue-600 to-cyan-500 h-2 rounded-full transition-all"
+                          className="h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full transition-all duration-1000"
                           style={{ width: `${percentage}%` }}
                         />
                       </div>
@@ -279,13 +352,97 @@ export default function PredictView() {
                 })}
               </div>
             </div>
-          </>
-        ) : (
-          <div className="bg-white rounded-xl shadow-md p-12 border border-slate-200 flex items-center justify-center">
-            <div className="text-center text-slate-400">
-              <Sparkles className="w-16 h-16 mx-auto mb-4 opacity-50" />
-              <p className="text-lg font-medium">Enter content to analyze</p>
-              <p className="text-sm mt-2">Your prediction results will appear here</p>
+
+            {/* Top Predictions */}
+            <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
+              <h3 className="text-2xl font-bold text-slate-900 mb-6">
+                Top Prédictions (Confiance la plus élevée)
+              </h3>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                {result.results
+                  .sort((a, b) => b.confidence - a.confidence)
+                  .slice(0, 6)
+                  .map((row, idx) => {
+                    const data = row.data as any;
+                    const isViral = row.prediction === "Viral";
+                    return (
+                      <div
+                        key={idx}
+                        className={`p-4 rounded-xl border-2 transition-all hover:scale-[1.02] ${
+                          isViral
+                            ? "bg-gradient-to-br from-green-50 to-emerald-50 border-green-300"
+                            : "bg-slate-50 border-slate-200"
+                        }`}
+                      >
+                        <div className="flex justify-between items-start mb-3">
+                          <div>
+                            <span className="text-xs font-semibold text-slate-500 uppercase">
+                              {data.platform}
+                            </span>
+                            <p className="font-bold text-slate-900 capitalize">
+                              {data.topic}
+                            </p>
+                          </div>
+                          <span
+                            className={`px-3 py-1 rounded-full text-sm font-bold ${
+                              isViral
+                                ? "bg-green-600 text-white"
+                                : "bg-slate-300 text-slate-700"
+                            }`}
+                          >
+                            {row.prediction}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-xs mb-2">
+                          <div>
+                            <p className="text-slate-500">Vues</p>
+                            <p className="font-semibold text-slate-900">
+                              {Number(data.views).toLocaleString()}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500">Likes</p>
+                            <p className="font-semibold text-slate-900">
+                              {Number(data.likes).toLocaleString()}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500">Partages</p>
+                            <p className="font-semibold text-slate-900">
+                              {Number(data.shares).toLocaleString()}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="pt-2 border-t border-slate-200">
+                          <p className="text-xs text-slate-600">
+                            Confiance: <span className="font-bold text-slate-900">
+                              {(row.confidence * 100).toFixed(1)}%
+                            </span>
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Empty State */}
+        {!result && !csvPreview.length && (
+          <div className="bg-white rounded-2xl shadow-xl p-16 border border-slate-200 text-center">
+            <div className="max-w-md mx-auto">
+              <div className="w-24 h-24 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                <Sparkles className="w-12 h-12 text-blue-600" />
+              </div>
+              <h3 className="text-2xl font-bold text-slate-900 mb-2">
+                Prêt à analyser vos posts ?
+              </h3>
+              <p className="text-slate-600">
+                Importez un fichier CSV pour découvrir quels posts ont le plus de
+                potentiel viral avec notre modèle MLP.
+              </p>
             </div>
           </div>
         )}
